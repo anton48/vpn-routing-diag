@@ -180,3 +180,53 @@ so adding/removing routes has no effect on which interface
 `apsd` uses. The only way to force APNs into a VPN tunnel is
 `includeAllNetworks=true` + `excludeAPNs=false` — a honest
 full-tunnel.
+
+### Follow-up experiment: can a more-specific `includedRoute` beat NECP?
+
+Added a second toggle, "Hijack Apple ranges", that places
+`17.0.0.0/8` into `NEIPv4Settings.includedRoutes` and
+`64:ff9b::/96` (the iOS NAT64 synthesis prefix) into
+`NEIPv6Settings.includedRoutes`. Ran two additional scenarios:
+
+- E: `includeAllNetworks=false` + hijack
+- F: `includeAllNetworks=true`, `excludeAPNs=false`,
+  `excludeCellularServices=false`, + hijack
+
+In both the routing table shows our new entries cleanly:
+
+```
+17.0.0.0/af=255      link#131   utun56    USC
+64:ff9b::/af=255     link#131   utun56    USC
+```
+
+But cloned host routes for active APNs / Apple-service
+connections still come out pointing at **physical** interfaces:
+
+```
+17.57.146.138        192.168.4.10     en0      UGHWI   ← Wi-Fi, not utun56
+64:ff9b::1139:9287   fe80:7::…        pdp_ip0  UGHWI   ← cellular, not utun56
+64:ff9b::1139:9289   fe80:7::…        pdp_ip0  UGHWI
+... (×6)
+```
+
+Even with `includeAllNetworks=true` + APNs and cellular-services
+both unexcluded + explicit `/8` and `/96` include-entries, kernel
+still sends Apple traffic to the physical interfaces.
+
+**Why:** iOS/BSD uses **scoped route lookup**. When NECP binds a
+socket to a specific interface, kernel's per-packet route lookup
+is restricted to routes that are either unscoped OR scoped to
+the same interface. The scoped default
+`0.0.0.0 via <gw> <iface> UGSI` for `en0` / `pdp_ip0` wins
+against any unscoped entry, because the socket lookup is itself
+scoped to the interface that NECP chose.
+
+`NEIPv4Settings.includedRoutes` / `excludedRoutes` only produce
+**unscoped** routes. There is no documented API to install a
+route scoped to the VPN's own interface and thereby beat NECP.
+
+This is a stronger version of the same conclusion: the NECP
+interface binding can't be overridden from a Network Extension
+settings object at all. You have to let iOS decide whether APNs
+goes through the tunnel via the `excludeAPNs` flag (which itself
+only takes effect when `includeAllNetworks=true`).
