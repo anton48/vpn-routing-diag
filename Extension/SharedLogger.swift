@@ -65,18 +65,46 @@ enum SharedLogger {
             .appendingPathComponent(fileName)
     }
 
+    /// Tracks whether we've ever emitted a file-tier error. We log
+    /// at most once per failure class so the os_log stream doesn't
+    /// drown in duplicates.
+    private static var loggedCreateError = false
+    private static var loggedAppendError = false
+
     private static func appendToFile(_ message: String) {
         guard let url = fileURL() else { return }
         let line = "[\(formatter.string(from: Date()))] \(message)\n"
         guard let data = line.data(using: .utf8) else { return }
 
-        if let handle = try? FileHandle(forWritingTo: url) {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            // First write — create the file.
+            do {
+                try data.write(to: url)
+            } catch {
+                if !loggedCreateError {
+                    loggedCreateError = true
+                    os_log("appendToFile: CREATE failed at %{public}s: %{public}s",
+                           log: osLog, type: .error,
+                           url.path, "\(error)")
+                }
+            }
+            return
+        }
+
+        // Append.
+        do {
+            let handle = try FileHandle(forWritingTo: url)
             defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            // File doesn't exist yet — create it.
-            try? data.write(to: url, options: .atomic)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            if !loggedAppendError {
+                loggedAppendError = true
+                os_log("appendToFile: APPEND failed at %{public}s: %{public}s",
+                       log: osLog, type: .error,
+                       url.path, "\(error)")
+            }
         }
     }
 }

@@ -119,15 +119,34 @@ final class TunnelManager: ObservableObject {
     func refreshLog() {
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID) else {
-            logContents = "(App Group container unavailable — check entitlements)"
+            let msg = "(App Group container unavailable — check entitlements)"
+            NSLog("[RoutingDiag-App] refreshLog: \(msg)")
+            logContents = msg
             return
         }
         let url = container.appendingPathComponent("routing.log")
-        if let data = try? Data(contentsOf: url),
-           let text = String(data: data, encoding: .utf8) {
+        NSLog("[RoutingDiag-App] refreshLog: resolved url=\(url.path)")
+
+        let fm = FileManager.default
+        let exists = fm.fileExists(atPath: url.path)
+        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        NSLog("[RoutingDiag-App] refreshLog: exists=\(exists) size=\(size ?? -1)")
+
+        if !exists {
+            logContents = "(no log file yet — connect the tunnel at least once)"
+            return
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8) else {
+                logContents = "(log file has \(data.count) bytes but isn't valid UTF-8)"
+                return
+            }
             logContents = text
-        } else {
-            logContents = "(no log yet — connect the tunnel at least once)"
+        } catch {
+            let msg = "(failed to read log file: \(error.localizedDescription))"
+            NSLog("[RoutingDiag-App] refreshLog: \(msg)")
+            logContents = msg
         }
     }
 
