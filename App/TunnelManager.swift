@@ -9,7 +9,7 @@
 //
 
 import Foundation
-import NetworkExtension
+@preconcurrency import NetworkExtension
 import Combine
 
 @MainActor
@@ -17,11 +17,11 @@ final class TunnelManager: ObservableObject {
 
     /// Bundle ID of the packet tunnel extension. Must match the value
     /// in `project.yml` (target `PacketTunnel`).
-    private let providerBundleID = "net.vpnroutingdiag.app.tunnel"
+    private let providerBundleID = "com.vkturnproxy.routingdiag.app.tunnel"
 
     /// App Group ID shared with the extension. Must match both
     /// entitlements files.
-    static let appGroupID = "group.net.vpnroutingdiag.shared"
+    static let appGroupID = "group.com.vkturnproxy.routingdiag"
 
     @Published var includeAllNetworks: Bool = false
     @Published var excludeLocalNetworks: Bool = true   // matches iOS default on iOS

@@ -11,9 +11,9 @@ import os.log
 
 enum SharedLogger {
 
-    private static let appGroupID = "group.net.vpnroutingdiag.shared"
+    private static let appGroupID = "group.com.vkturnproxy.routingdiag"
     private static let fileName = "routing.log"
-    private static let osLog = OSLog(subsystem: "net.vpnroutingdiag.tunnel",
+    private static let osLog = OSLog(subsystem: "com.vkturnproxy.routingdiag.tunnel",
                                      category: "routing")
     private static let formatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()

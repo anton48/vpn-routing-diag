@@ -8,7 +8,7 @@
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.net.vpnroutingdiag.shared</string>
+		<string>group.com.vkturnproxy.routingdiag</string>
 	</array>
 </dict>
 </plist>

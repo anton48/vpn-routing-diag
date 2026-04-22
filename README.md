@@ -41,9 +41,19 @@ physical device.
 ### App Groups
 
 Both the app and the extension share the App Group
-`group.net.vpnroutingdiag.shared`. Change the identifier to
-something unique to your team, update both entitlements files, and
-regenerate the project.
+`group.com.vkturnproxy.routingdiag`. If your Apple Developer team
+doesn't own the `com.vkturnproxy.*` prefix, change the identifier
+in all four places — `App/App.entitlements`,
+`Extension/Extension.entitlements`, `App/TunnelManager.swift`
+(`appGroupID`), `Extension/SharedLogger.swift` (`appGroupID`) —
+and regenerate the project with `xcodegen generate`.
+
+Xcode's Automatic Signing usually creates the group identifier for
+you the first time you build. If the group identifier stays red
+in the Capabilities pane, click the circular refresh arrow next to
+the `+` button under "App Groups" to nudge Xcode. If still red,
+create it manually at
+<https://developer.apple.com/account/resources/identifiers/list/applicationGroup>.
 
 ## Usage
 
