@@ -28,6 +28,13 @@ final class TunnelManager: ObservableObject {
     @Published var excludeAPNs: Bool = true            // matches iOS default
     @Published var excludeCellularServices: Bool = true // matches iOS default
 
+    /// When on, the extension adds Apple's IPv4 /8 (17.0.0.0/8) and
+    /// the NAT64 /96 (64:ff9b::/96) to NEIPv4Settings.includedRoutes
+    /// / NEIPv6Settings.includedRoutes explicitly. Used to test
+    /// whether more-specific route entries can override NECP's
+    /// socket-interface binding for APNs/CommCenter.
+    @Published var hijackAppleRanges: Bool = false
+
     @Published var status: NEVPNStatus = .invalid
     @Published var lastError: String?
     @Published var logContents: String = ""
@@ -79,6 +86,7 @@ final class TunnelManager: ObservableObject {
             "excludeLocalNetworks": excludeLocalNetworks,
             "excludeAPNs": excludeAPNs,
             "excludeCellularServices": excludeCellularServices,
+            "hijackAppleRanges": hijackAppleRanges,
         ]
 
         m.protocolConfiguration = proto

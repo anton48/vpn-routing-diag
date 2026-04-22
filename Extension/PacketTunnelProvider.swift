@@ -45,9 +45,38 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // 2. Build settings that mimic a real full-tunnel VPN.
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "10.0.0.1")
         let ipv4 = NEIPv4Settings(addresses: ["10.200.0.4"], subnetMasks: ["255.255.255.0"])
-        ipv4.includedRoutes = [NEIPv4Route.default()]
+        var ipv4Included: [NEIPv4Route] = [NEIPv4Route.default()]
+        let hijack = (flags["hijackAppleRanges"] as? Bool) ?? false
+        if hijack {
+            // Explicitly route Apple's /8 through the tunnel — the
+            // experiment: can a more-specific include-entry beat NECP's
+            // socket-to-interface binding that keeps APNs on physical?
+            ipv4Included.append(
+                NEIPv4Route(destinationAddress: "17.0.0.0",
+                            subnetMask: "255.0.0.0"))
+            SharedLogger.log("hijackAppleRanges=true: added 17.0.0.0/8 to IPv4 includedRoutes")
+        }
+        ipv4.includedRoutes = ipv4Included
         ipv4.excludedRoutes = []
         settings.ipv4Settings = ipv4
+
+        // IPv6: include both the full default ::/0 (in parallel with
+        // IPv4) and, when hijack is enabled, the NAT64 /96 range
+        // that iOS uses to map IPv4 into IPv6 for DNS64 networks.
+        // Apple's APNs traffic on DNS64/NAT64 networks shows up as
+        // 64:ff9b::<mapped-17.x.x.x> in the routing table.
+        let ipv6 = NEIPv6Settings(addresses: ["fd00:cafe::4"], networkPrefixLengths: [64])
+        var ipv6Included: [NEIPv6Route] = [NEIPv6Route.default()]
+        if hijack {
+            ipv6Included.append(
+                NEIPv6Route(destinationAddress: "64:ff9b::",
+                            networkPrefixLength: 96))
+            SharedLogger.log("hijackAppleRanges=true: added 64:ff9b::/96 to IPv6 includedRoutes")
+        }
+        ipv6.includedRoutes = ipv6Included
+        ipv6.excludedRoutes = []
+        settings.ipv6Settings = ipv6
+
         settings.dnsSettings = NEDNSSettings(servers: ["1.1.1.1", "1.0.0.1"])
         settings.mtu = NSNumber(value: 1280)
 

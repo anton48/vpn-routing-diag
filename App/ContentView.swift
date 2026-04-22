@@ -54,6 +54,12 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+
+            Toggle("Hijack Apple ranges (17.0.0.0/8 + 64:ff9b::/96)",
+                   isOn: $tunnel.hijackAppleRanges)
+            Text("Experiment: add Apple's /8 + NAT64 prefix explicitly to includedRoutes. Tests whether a more-specific route beats NECP's interface binding for APNs sockets.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
