@@ -115,3 +115,68 @@ editor.
   iOS changes routing on `.connected` transition), extend the
   extension to run an actual WireGuard / OpenVPN client — this
   skeleton doesn't include that.
+
+## Findings
+
+Ran on iPhone SE3, iOS 26.2, April 2026. Full logs in
+`findings/` (shared out via the app's Share button).
+
+**Main result: `excludeAPNs` and `excludeCellularServices` are NOT
+implemented via routing-table entries.** Toggling them adds or
+removes no structural routes.
+
+Diffed POST-SETTINGS IPv4 route tables across all four scenarios:
+
+| pair | structural diff |
+|---|---|
+| A (`includeAllNetworks=false`) ↔ B (true, exclude\*=true) | none — only one cloned Apple host IP differs (`17.57.146.141` vs `.140`), a transient artifact |
+| B (exclude\*=true) ↔ C (excludeAPNs=false) | one host-specific cloned route removed (`17.57.146.140 → en0`) — and that's it |
+| C ↔ D (excludeCellularServices=false) | empty |
+
+IPv6 diffs show the same pattern: a handful of NAT64-mapped Apple
+host addresses (`64:ff9b::1139:xxxx`) appear/disappear as connections
+come and go, but no new scoped defaults or explicit excludes.
+
+### What's actually happening
+
+In every scenario the routing table already contains
+**interface-scoped default routes** for every physical / tunnel
+interface:
+
+```
+0.0.0.0    192.168.4.10  en0      UGSI   ← Wi-Fi router, scoped
+0.0.0.0    10.116.42.48  pdp_ip0  UGSI   ← cellular, scoped
+0.0.0.0    13.4.173.240  pdp_ip1  UGSI   ← secondary cellular, scoped
+0.0.0.0    link#131      utun56   USC    ← our fake VPN, unscoped default
+```
+
+The `UGSI` flag = Up / Gateway / Static / **Interface-scoped**.
+These routes are used only when a socket is explicitly bound to
+that interface. `apsd` (Apple Push Service daemon), `CommCenter`
+(cellular services), and similar system daemons bind their sockets
+to `en0` or `pdp_ip0` based on policies set at a layer above
+routing — **NECP (Network Extension Control Policy)** — which
+isn't inspectable from a Network Extension using documented APIs.
+
+When `excludeAPNs=true` (or the equivalent split-tunnel default):
+iOS's NECP policy pins `apsd`'s sockets to `en0` / `pdp_ip0`,
+traffic uses the scoped default, bypasses the VPN tunnel. When
+`excludeAPNs=false`: iOS releases that binding, `apsd` uses the
+unscoped default (`utun56`), traffic goes through the tunnel.
+
+The host-specific cloned routes we saw (`17.57.146.140 via
+192.168.4.10 en0 UGHWI`) are *consequences* of that binding, not
+its cause: once `apsd` made a TCP connection on `en0`, the kernel
+cached a per-host route to speed up subsequent packets.
+
+### Consequence for the original question
+
+> Can we emulate `excludeAPNs=false` via
+> `NEIPv4Settings.excludedRoutes` in a split-tunnel
+> (`includeAllNetworks=false`) profile?
+
+**No.** NECP socket-binding decisions happen before routing lookup,
+so adding/removing routes has no effect on which interface
+`apsd` uses. The only way to force APNs into a VPN tunnel is
+`includeAllNetworks=true` + `excludeAPNs=false` — a honest
+full-tunnel.
