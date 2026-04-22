@@ -101,23 +101,39 @@ enum RoutingTable {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, family, NET_RT_DUMP, 0]
 
         // Size query.
+        SharedLogger.log("[trace] dumpRoutes(af=\(family)): sysctl size query...")
         var len: size_t = 0
-        if sysctl(&mib, UInt32(mib.count), nil, &len, nil, 0) != 0 {
+        let sizeRC = sysctl(&mib, UInt32(mib.count), nil, &len, nil, 0)
+        SharedLogger.log("[trace] dumpRoutes(af=\(family)): size query rc=\(sizeRC) len=\(len) errno=\(errno)")
+        if sizeRC != 0 {
             return "  (sysctl size query failed: errno=\(errno))\n"
         }
         if len == 0 { return "  (no routes)\n" }
 
+        // Safety cap on buffer size — extension memory limit is
+        // typically 15-50 MB, and a pathological routing table
+        // shouldn't exceed 1 MB. If it does, something is wrong.
+        let lenCap = 1_048_576
+        if len > lenCap {
+            SharedLogger.log("[trace] dumpRoutes(af=\(family)): len=\(len) exceeds cap \(lenCap), capping")
+            len = lenCap
+        }
+
         // Fetch.
+        SharedLogger.log("[trace] dumpRoutes(af=\(family)): allocating \(len) bytes...")
         var buf = [UInt8](repeating: 0, count: len)
+        SharedLogger.log("[trace] dumpRoutes(af=\(family)): sysctl fetch...")
         let rc = buf.withUnsafeMutableBufferPointer { bp -> Int32 in
             guard let base = bp.baseAddress else { return -1 }
             return sysctl(&mib, UInt32(mib.count), base, &len, nil, 0)
         }
+        SharedLogger.log("[trace] dumpRoutes(af=\(family)): fetch rc=\(rc) actualLen=\(len) errno=\(errno)")
         if rc != 0 {
             return "  (sysctl fetch failed: errno=\(errno))\n"
         }
 
         // Walk messages. All pointer reinterpretation stays local.
+        SharedLogger.log("[trace] dumpRoutes(af=\(family)): walking buffer...")
         var lines: [String] = []
         lines.append(String(format: "  %-40s %-40s %-10s %-10s %s",
                             "destination", "gateway", "iface", "flags", "rtax"))
@@ -142,6 +158,7 @@ enum RoutingTable {
                 lines.append(formatRoute(base: base, offset: offset, msglen: msglen))
                 offset += msglen
             }
+            SharedLogger.log("[trace] dumpRoutes(af=\(family)): parsed \(count) entries")
         }
         return lines.joined(separator: "\n") + "\n"
     }
