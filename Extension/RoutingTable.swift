@@ -135,8 +135,9 @@ enum RoutingTable {
         // Walk messages. All pointer reinterpretation stays local.
         SharedLogger.log("[trace] dumpRoutes(af=\(family)): walking buffer...")
         var lines: [String] = []
-        lines.append(String(format: "  %-40s %-40s %-10s %-10s %s",
-                            "destination", "gateway", "iface", "flags", "rtax"))
+        lines.append(formatRouteColumns(
+            dst: "destination", gw: "gateway",
+            iface: "iface", flags: "flags", rtax: "rtax"))
         buf.withUnsafeBufferPointer { bp in
             guard let base = bp.baseAddress else { return }
             var offset = 0
@@ -223,8 +224,23 @@ enum RoutingTable {
         let iface = interfaceName(forIndex: Int32(ifIndex)) ?? "if\(ifIndex)"
         let flagsStr = formatRouteFlags(flags)
         let addrsDesc = extractedAddrs.keys.sorted().map { rtaxName($0) }.joined(separator: ",")
-        return String(format: "  %-40s %-40s %-10s %-10s %s",
-                      dstCidr, gw, iface, flagsStr, addrsDesc)
+        return formatRouteColumns(
+            dst: dstCidr, gw: gw, iface: iface, flags: flagsStr, rtax: addrsDesc)
+    }
+
+    /// Fixed-width column formatting done in pure Swift — avoids
+    /// `String(format: "%-40s ...", myString)`, which on modern iOS
+    /// runtimes raises a precondition failure (`%s` expects a
+    /// C-string pointer, not a Swift String).
+    private static func formatRouteColumns(
+        dst: String, gw: String, iface: String,
+        flags: String, rtax: String
+    ) -> String {
+        let d = dst.padding(toLength: 40, withPad: " ", startingAt: 0)
+        let g = gw.padding(toLength: 40, withPad: " ", startingAt: 0)
+        let i = iface.padding(toLength: 10, withPad: " ", startingAt: 0)
+        let f = flags.padding(toLength: 10, withPad: " ", startingAt: 0)
+        return "  \(d) \(g) \(i) \(f) \(rtax)"
     }
 
     // MARK: - sockaddr → string (pointer stays local)
