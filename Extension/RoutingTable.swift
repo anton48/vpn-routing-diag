@@ -2,23 +2,21 @@
 //  RoutingTable.swift
 //  RoutingDiag / Extension
 //
-//  Two diagnostics, both using only documented-ish BSD APIs that
-//  work in iOS Network Extensions without special entitlements:
+//  Two diagnostics that work in iOS Network Extensions without
+//  special entitlements:
 //
 //  1. `dumpInterfaces()` — `getifaddrs(3)`, the standard way to list
-//     interface names / addresses / flags. Fully public API.
+//     interface names / addresses / flags.
 //
-//  2. `dumpIPv4Routes()` / `dumpIPv6Routes()` —
+//  2. `dumpRoutes(family:)` —
 //     `sysctl(CTL_NET, PF_ROUTE, 0, AF_INET|AF_INET6, NET_RT_DUMP, 0)`,
-//     the same way `netstat -rn` queries the kernel on macOS/iOS.
-//     The API itself is public (declared in `<sys/sysctl.h>` /
-//     `<net/route.h>`), though iOS App Store review has historically
-//     been variable about routing-table dumps. For dev builds /
-//     TestFlight this is fine.
+//     the same way `netstat -rn` queries the kernel. The rt_msghdr
+//     layout and RTAX_* / RTF_* constants live in
+//     BridgingHeader.h (iOS SDK omits `<net/route.h>`).
 //
-//  All helpers return ready-to-log strings rather than structured
-//  data — we don't need to programmatically manipulate the routes,
-//  only to diff two dumps by eye.
+//  All `withMemoryRebound` closures keep their rebound pointer
+//  strictly local — escaping such a pointer past the closure is
+//  undefined behavior, and earlier versions of this file did so.
 //
 
 import Foundation
@@ -26,15 +24,15 @@ import Darwin
 
 enum RoutingTable {
 
-    /// Build a human-readable string of the current kernel state:
-    /// interfaces, IPv4 routing table, IPv6 routing table.
+    /// Build a human-readable multi-section dump: interfaces, IPv4
+    /// routes, IPv6 routes.
     static func dump(label: String) -> String {
         var out = "===== \(label) =====\n"
         out += "--- interfaces (getifaddrs) ---\n"
         out += dumpInterfaces()
-        out += "--- IPv4 routes (sysctl NET_RT_DUMP) ---\n"
+        out += "--- IPv4 routes (sysctl NET_RT_DUMP AF_INET) ---\n"
         out += dumpRoutes(family: AF_INET)
-        out += "--- IPv6 routes (sysctl NET_RT_DUMP) ---\n"
+        out += "--- IPv6 routes (sysctl NET_RT_DUMP AF_INET6) ---\n"
         out += dumpRoutes(family: AF_INET6)
         return out
     }
@@ -54,16 +52,19 @@ enum RoutingTable {
             let info = cur.pointee
             let name = String(cString: info.ifa_name)
             let familyStr: String
-            var addrStr = ""
-            var netmaskStr = ""
-            if let sa = info.ifa_addr?.pointee {
-                familyStr = familyName(Int32(sa.sa_family))
-                addrStr = sockaddrToString(info.ifa_addr) ?? ""
+            let addrStr: String
+            let netmaskStr: String
+            if let sa = info.ifa_addr {
+                familyStr = familyName(Int32(sa.pointee.sa_family))
+                addrStr = sockaddrToString(sa) ?? ""
             } else {
                 familyStr = "?"
+                addrStr = ""
             }
             if let nm = info.ifa_netmask {
                 netmaskStr = sockaddrToString(nm) ?? ""
+            } else {
+                netmaskStr = ""
             }
             let flagsStr = formatIfFlags(info.ifa_flags)
             lines.append("  \(name.padding(toLength: 10, withPad: " ", startingAt: 0))"
@@ -81,14 +82,14 @@ enum RoutingTable {
     private static func dumpRoutes(family: Int32) -> String {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, family, NET_RT_DUMP, 0]
 
-        // 1. Ask for the size.
+        // Size query.
         var len: size_t = 0
         if sysctl(&mib, UInt32(mib.count), nil, &len, nil, 0) != 0 {
             return "  (sysctl size query failed: errno=\(errno))\n"
         }
         if len == 0 { return "  (no routes)\n" }
 
-        // 2. Fetch.
+        // Fetch.
         var buf = [UInt8](repeating: 0, count: len)
         let rc = buf.withUnsafeMutableBufferPointer { bp -> Int32 in
             guard let base = bp.baseAddress else { return -1 }
@@ -98,19 +99,23 @@ enum RoutingTable {
             return "  (sysctl fetch failed: errno=\(errno))\n"
         }
 
-        // 3. Walk the buffer message-by-message.
+        // Walk messages. All pointer reinterpretation stays local.
         var lines: [String] = []
-        lines.append(String(format: "  %-40s %-40s %-10s %-6s %s",
-                            "destination", "gateway", "iface", "flags", "addrs"))
-        var offset = 0
+        lines.append(String(format: "  %-40s %-40s %-10s %-10s %s",
+                            "destination", "gateway", "iface", "flags", "rtax"))
         buf.withUnsafeBufferPointer { bp in
             guard let base = bp.baseAddress else { return }
+            var offset = 0
             while offset < len {
-                let hdrPtr = base.advanced(by: offset)
-                    .withMemoryRebound(to: rt_msghdr.self, capacity: 1) { $0 }
-                let msglen = Int(hdrPtr.pointee.rtm_msglen)
+                // Read msglen from the rt_msghdr header, staying inside
+                // the rebind closure.
+                let msglen: Int = base.advanced(by: offset)
+                    .withMemoryRebound(to: rt_msghdr.self, capacity: 1) { ptr in
+                        Int(ptr.pointee.rtm_msglen)
+                    }
                 if msglen == 0 { break }
-                lines.append(formatRoute(base: base, offset: offset, family: family))
+                if offset + msglen > len { break }
+                lines.append(formatRoute(base: base, offset: offset, msglen: msglen))
                 offset += msglen
             }
         }
@@ -119,34 +124,49 @@ enum RoutingTable {
 
     private static func formatRoute(base: UnsafePointer<UInt8>,
                                     offset: Int,
-                                    family _: Int32) -> String {
-        let hdr = base.advanced(by: offset)
-            .withMemoryRebound(to: rt_msghdr.self, capacity: 1) { $0.pointee }
-        let flags = hdr.rtm_flags
-        let addrs = hdr.rtm_addrs
-        let ifIndex = hdr.rtm_index
+                                    msglen: Int) -> String {
+        // Copy out header fields (staying inside rebind closure).
+        let (flags, addrs, ifIndex, hdrSize): (Int32, Int32, UInt16, Int) =
+            base.advanced(by: offset).withMemoryRebound(to: rt_msghdr.self, capacity: 1) { ptr in
+                (ptr.pointee.rtm_flags,
+                 ptr.pointee.rtm_addrs,
+                 ptr.pointee.rtm_index,
+                 MemoryLayout<rt_msghdr>.size)
+            }
 
-        // Sockaddr block starts immediately after the header. Entries
-        // are ordered by RTAX_* and packed with sockaddr-specific
-        // alignment: each sockaddr rounds up to the next 4-byte
-        // boundary (SA_SIZE in kernel sources).
-        var saOffset = offset + MemoryLayout<rt_msghdr>.size
+        // Walk the sockaddr block immediately following the header.
+        // Entries are ordered by RTAX_* and packed: each sockaddr
+        // rounds up to the next 4-byte boundary (SA_SIZE macro in
+        // kernel sources).
+        var saOffset = offset + hdrSize
         var extractedAddrs: [Int: String] = [:]
-        for rtax in 0..<RTAX_MAX {
+        for rtax in 0..<Int(RTAX_MAX) {
             let bit: Int32 = 1 << rtax
             if (addrs & bit) == 0 { continue }
-            let saPtr = base.advanced(by: saOffset)
-                .withMemoryRebound(to: sockaddr.self, capacity: 1) { $0 }
-            let saLen = Int(saPtr.pointee.sa_len)
+            if saOffset >= offset + msglen { break }
+
+            // Bounds-checked sa_len read.
+            let saLen: Int = base.advanced(by: saOffset)
+                .withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    Int(saPtr.pointee.sa_len)
+                }
             if saLen == 0 {
+                // An empty sockaddr still consumes 4 bytes in the stream.
                 saOffset += MemoryLayout<UInt32>.size
                 continue
             }
-            if let str = sockaddrToString(saPtr) {
-                extractedAddrs[Int(rtax)] = str
+            if saOffset + saLen > offset + msglen { break }
+
+            // Convert to string — also staying in rebind closure.
+            let str: String? = base.advanced(by: saOffset)
+                .withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    sockaddrToString(saPtr)
+                }
+            if let str = str {
+                extractedAddrs[rtax] = str
             }
-            // Align to the next 4-byte boundary.
-            let padded = (saLen + 3) & ~3
+            // SA_SIZE alignment: round up to next 4 bytes, min 4.
+            let padded = max(4, (saLen + 3) & ~3)
             saOffset += padded
         }
 
@@ -154,23 +174,21 @@ enum RoutingTable {
         let gw = extractedAddrs[Int(RTAX_GATEWAY)] ?? "-"
         let mask = extractedAddrs[Int(RTAX_NETMASK)] ?? ""
         let dstCidr: String
-        if mask.isEmpty || mask == "/0" {
+        if mask.isEmpty {
             dstCidr = dst
         } else {
-            dstCidr = "\(dst) \(mask)"
+            dstCidr = "\(dst)/\(mask)"
         }
         let iface = interfaceName(forIndex: Int32(ifIndex)) ?? "if\(ifIndex)"
         let flagsStr = formatRouteFlags(flags)
-        // A debug hint: list which RTAX_ slots had data.
         let addrsDesc = extractedAddrs.keys.sorted().map { rtaxName($0) }.joined(separator: ",")
-        return String(format: "  %-40s %-40s %-10s %-6s %s",
+        return String(format: "  %-40s %-40s %-10s %-10s %s",
                       dstCidr, gw, iface, flagsStr, addrsDesc)
     }
 
-    // MARK: - Helpers: sockaddr → string
+    // MARK: - sockaddr → string (pointer stays local)
 
-    private static func sockaddrToString(_ sa: UnsafePointer<sockaddr>?) -> String? {
-        guard let sa = sa else { return nil }
+    private static func sockaddrToString(_ sa: UnsafePointer<sockaddr>) -> String? {
         let family = Int32(sa.pointee.sa_family)
 
         switch family {
@@ -195,37 +213,33 @@ enum RoutingTable {
             }
 
         case AF_LINK:
-            // Data-link sockaddrs usually appear in RTAX_GATEWAY /
-            // RTAX_IFP. We return the interface name when available
-            // plus a hex dump of the link-level address if present.
             return sa.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { dlPtr in
                 let dl = dlPtr.pointee
                 let nameLen = Int(dl.sdl_nlen)
                 let addrLen = Int(dl.sdl_alen)
+                let index = Int(dl.sdl_index)
+
+                // sdl_data holds nameLen bytes of interface name then
+                // addrLen bytes of link-layer address (no separator).
                 var name = ""
                 if nameLen > 0 {
-                    withUnsafePointer(to: dl.sdl_data) { dataPtr in
-                        dataPtr.withMemoryRebound(to: CChar.self, capacity: nameLen) { cptr in
-                            name = String(cString: cptr, encoding: .ascii) ?? ""
-                            // sdl_data is unterminated — clamp.
-                            name = String(name.prefix(nameLen))
+                    let nameBytes: [UInt8] = withUnsafePointer(to: dl.sdl_data) { dataPtr in
+                        dataPtr.withMemoryRebound(to: UInt8.self, capacity: nameLen + addrLen) { bp in
+                            Array(UnsafeBufferPointer(start: bp, count: nameLen))
                         }
                     }
+                    name = String(bytes: nameBytes, encoding: .ascii) ?? ""
                 }
                 if addrLen == 0 {
-                    return "link#\(dl.sdl_index)\(name.isEmpty ? "" : "(\(name))")"
+                    return "link#\(index)\(name.isEmpty ? "" : "(\(name))")"
                 }
-                // Link-layer address (e.g. MAC) hex dump.
-                var hex = ""
-                withUnsafePointer(to: dl.sdl_data) { dataPtr in
+                let addrBytes: [UInt8] = withUnsafePointer(to: dl.sdl_data) { dataPtr in
                     dataPtr.withMemoryRebound(to: UInt8.self, capacity: nameLen + addrLen) { bp in
-                        for i in 0..<addrLen {
-                            if i > 0 { hex += ":" }
-                            hex += String(format: "%02x", bp.advanced(by: nameLen + i).pointee)
-                        }
+                        Array(UnsafeBufferPointer(start: bp.advanced(by: nameLen), count: addrLen))
                     }
                 }
-                return "\(name.isEmpty ? "link" : name):\(hex)"
+                let hex = addrBytes.map { String(format: "%02x", $0) }.joined(separator: ":")
+                return "\(name.isEmpty ? "link#\(index)" : name):\(hex)"
             }
 
         default:
@@ -235,8 +249,7 @@ enum RoutingTable {
 
     // MARK: - Helpers: flags formatting
 
-    /// Mimic netstat's route-flag short letters for the most common
-    /// flags. See `<net/route.h>`.
+    /// Mimic netstat's route-flag short letters. See `<net/route.h>`.
     private static func formatRouteFlags(_ flags: Int32) -> String {
         var s = ""
         if flags & RTF_UP != 0        { s += "U" }
@@ -251,6 +264,9 @@ enum RoutingTable {
         if flags & RTF_MULTICAST != 0 { s += "m" }
         if flags & RTF_WASCLONED != 0 { s += "W" }
         if flags & RTF_IFSCOPE != 0   { s += "I" }
+        // RTF_ROUTER = 0x80000000 comes in as UInt32 from BridgingHeader.h;
+        // `flags` is Int32, so convert explicitly.
+        if flags & Int32(bitPattern: RTF_ROUTER) != 0 { s += "R" }
         return s
     }
 

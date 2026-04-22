@@ -2,9 +2,9 @@
 //  ContentView.swift
 //  RoutingDiag
 //
-//  One-screen SwiftUI UI: toggle the four iOS flags, install/update the
-//  VPN profile, connect/disconnect, view the log file the extension
-//  writes to the shared App Group container.
+//  Toggle the four iOS flags, install/update the VPN profile,
+//  connect/disconnect, view the log file the extension writes to
+//  the shared App Group container.
 //
 
 import SwiftUI
@@ -16,66 +16,77 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section("Flags") {
-                    Toggle("includeAllNetworks", isOn: $tunnel.includeAllNetworks)
-                    Toggle("excludeLocalNetworks", isOn: $tunnel.excludeLocalNetworks)
-                        .disabled(!tunnel.includeAllNetworks)
-                    Toggle("excludeAPNs (iOS 16.4+)", isOn: $tunnel.excludeAPNs)
-                        .disabled(!tunnel.includeAllNetworks)
-                    Toggle("excludeCellularServices (iOS 16.4+)",
-                           isOn: $tunnel.excludeCellularServices)
-                        .disabled(!tunnel.includeAllNetworks)
-                    Text(flagHint)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Section("Profile") {
-                    Button("Install / Update Profile") {
-                        Task { await tunnel.installOrUpdateProfile() }
-                    }
-                    if let err = tunnel.lastError {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
-                }
-
-                Section("Status: \(tunnel.status.description)") {
-                    HStack(spacing: 16) {
-                        Button("Connect") { tunnel.connect() }
-                            .disabled(tunnel.status == .connected
-                                      || tunnel.status == .connecting)
-                        Button("Disconnect") { tunnel.disconnect() }
-                            .disabled(tunnel.status == .disconnected
-                                      || tunnel.status == .invalid)
-                    }
-                }
-
-                Section("Log") {
-                    HStack(spacing: 16) {
-                        Button("Refresh") { tunnel.refreshLog() }
-                        Button("Clear") { tunnel.clearLog() }
-                            .foregroundColor(.red)
-                    }
-                    ScrollView(.horizontal) {
-                        Text(tunnel.logContents.isEmpty ? "(empty)" : tunnel.logContents)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(minWidth: 0, alignment: .leading)
-                    }
-                    .frame(maxHeight: 400)
-                }
+                flagsSection
+                profileSection
+                statusSection
+                logSection
             }
             .navigationTitle("Routing Diag")
         }
     }
 
-    private var flagHint: String {
-        if !tunnel.includeAllNetworks {
-            return "Split-tunnel mode. Exclude* flags are ignored by iOS."
+    // MARK: - Sections
+
+    private var flagsSection: some View {
+        Section(header: Text("Flags")) {
+            Toggle("includeAllNetworks", isOn: $tunnel.includeAllNetworks)
+
+            if tunnel.includeAllNetworks {
+                Toggle("excludeLocalNetworks", isOn: $tunnel.excludeLocalNetworks)
+                Toggle("excludeAPNs (iOS 16.4+)", isOn: $tunnel.excludeAPNs)
+                Toggle("excludeCellularServices (iOS 16.4+)",
+                       isOn: $tunnel.excludeCellularServices)
+                Text("Full-tunnel mode. Exclude* flags take effect (iOS 16.4+ for APNs / Cellular).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("Split-tunnel mode. iOS ignores exclude* flags; they are hidden here so the effective configuration is unambiguous.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
-        return "Full-tunnel mode. Exclude* flags take effect (iOS 16.4+ for APNs and Cellular)."
+    }
+
+    private var profileSection: some View {
+        Section(header: Text("Profile")) {
+            Button("Install / Update Profile") {
+                Task { await tunnel.installOrUpdateProfile() }
+            }
+            if let err = tunnel.lastError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+        }
+    }
+
+    private var statusSection: some View {
+        Section(header: Text("Status: \(tunnel.status.description)")) {
+            HStack(spacing: 16) {
+                Button("Connect") { tunnel.connect() }
+                    .disabled(tunnel.status == .connected
+                              || tunnel.status == .connecting)
+                Button("Disconnect") { tunnel.disconnect() }
+                    .disabled(tunnel.status == .disconnected
+                              || tunnel.status == .invalid)
+            }
+        }
+    }
+
+    private var logSection: some View {
+        Section(header: Text("Log")) {
+            HStack(spacing: 16) {
+                Button("Refresh") { tunnel.refreshLog() }
+                Button("Clear") { tunnel.clearLog() }
+                    .foregroundColor(.red)
+            }
+            Text(tunnel.logContents.isEmpty
+                 ? "(empty — hit Connect then Refresh. If still empty after a connected tunnel, the App Group container is likely unavailable; check Console.app on a tethered Mac for os_log messages from subsystem 'com.vkturnproxy.routingdiag.tunnel'.)"
+                 : tunnel.logContents)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

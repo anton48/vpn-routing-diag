@@ -13,11 +13,8 @@
 //  4. Call `completionHandler(nil)` so iOS transitions the tunnel to
 //     `.connected`, then dump once more after a short settle delay
 //     (`POST-COMPLETION`) in case iOS finalizes routes asynchronously.
-//
-//  The tunnel doesn't forward any packets — the TUN fd is accepted
-//  but never read from. That's fine for routing-table inspection;
-//  iOS populates the routing table based on NEPacketTunnelNetworkSettings,
-//  not based on whether the tunnel is actually moving data.
+//  5. Keep a packet reader loop alive so iOS doesn't tear the tunnel
+//     down for "not making progress". Packets are discarded.
 //
 
 import Foundation
@@ -31,39 +28,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping (Error?) -> Void
     ) {
         SharedLogger.reset()
+        SharedLogger.log("--- startTunnel entry ---")
 
-        // Echo the chosen flags from providerConfiguration so the log
-        // is self-contained.
         let proto = protocolConfiguration as? NETunnelProviderProtocol
         let flags = proto?.providerConfiguration ?? [:]
-        SharedLogger.log("startTunnel called")
         SharedLogger.log("serverAddress=\(proto?.serverAddress ?? "nil")")
         SharedLogger.log("flags (from providerConfiguration): \(flags)")
-        SharedLogger.log("flags (from NEVPNProtocol):"
-                         + " includeAllNetworks=\(proto?.includeAllNetworks ?? false)"
-                         + " excludeLocalNetworks=\(proto?.excludeLocalNetworks ?? false)"
-                         + iOS164FlagDescription(proto))
+        let iosFlagSummary = "includeAllNetworks=\(proto?.includeAllNetworks ?? false)"
+            + " excludeLocalNetworks=\(proto?.excludeLocalNetworks ?? false)"
+            + iOS164FlagDescription(proto)
+        SharedLogger.log("flags (from NEVPNProtocol): \(iosFlagSummary)")
 
-        // 1. Pre-settings snapshot.
+        // 1. PRE-SETTINGS.
         SharedLogger.log(RoutingTable.dump(label: "PRE-SETTINGS"))
 
-        // 2. Build settings. Shape mimics a full-tunnel VPN:
-        //    - Tunnel IP 10.200.0.4/24
-        //    - IPv4 default route via the tunnel
-        //    - DNS 1.1.1.1 (so iOS installs DNS routes)
-        //    - No custom excludedRoutes — we want to see what iOS
-        //      adds on its own when includeAllNetworks / excludeAPNs
-        //      flags are toggled.
+        // 2. Build settings that mimic a real full-tunnel VPN.
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "10.0.0.1")
-
         let ipv4 = NEIPv4Settings(addresses: ["10.200.0.4"], subnetMasks: ["255.255.255.0"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
-        ipv4.excludedRoutes = [] // leave empty to see what iOS does by itself
+        ipv4.excludedRoutes = []
         settings.ipv4Settings = ipv4
-
-        let dns = NEDNSSettings(servers: ["1.1.1.1", "1.0.0.1"])
-        settings.dnsSettings = dns
-
+        settings.dnsSettings = NEDNSSettings(servers: ["1.1.1.1", "1.0.0.1"])
         settings.mtu = NSNumber(value: 1280)
 
         SharedLogger.log("applying NEPacketTunnelNetworkSettings...")
@@ -73,19 +58,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 completionHandler(error)
                 return
             }
-
             SharedLogger.log("setTunnelNetworkSettings OK")
 
-            // 3. Post-settings snapshot.
+            // 3. POST-SETTINGS.
             SharedLogger.log(RoutingTable.dump(label: "POST-SETTINGS"))
 
-            // 4. Signal success and dump again after a short settle.
+            // 4. Signal iOS the tunnel is up.
             completionHandler(nil)
-            SharedLogger.log("completionHandler(nil) called — iOS should transition to .connected")
+            SharedLogger.log("completionHandler(nil) called — iOS should go to .connected")
 
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
-                SharedLogger.log(RoutingTable.dump(label: "POST-COMPLETION (1.5s after)"))
-                SharedLogger.log("startTunnel flow finished")
+            // 5. Keep the TUN drained so iOS doesn't time us out.
+            self.startPacketDrain()
+
+            // Delayed POST-COMPLETION snapshot in case iOS installs
+            // additional rules after transitioning to .connected.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                SharedLogger.log(RoutingTable.dump(label: "POST-COMPLETION (2s after)"))
+                SharedLogger.log("--- startTunnel flow finished ---")
             }
         }
     }
@@ -94,7 +83,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        SharedLogger.log("stopTunnel reason=\(reason.rawValue)")
+        SharedLogger.log("--- stopTunnel reason=\(stopReasonName(reason)) ---")
         SharedLogger.log(RoutingTable.dump(label: "PRE-TEARDOWN"))
         completionHandler()
     }
@@ -103,13 +92,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         _ messageData: Data,
         completionHandler: ((Data?) -> Void)?
     ) {
-        // Currently unused. Reserved for future "dump on demand" IPC
-        // from the main app if we want to capture routing state after
-        // some user-triggered event (Wi-Fi reconnect, etc.).
+        // Reserved for dump-on-demand IPC from the main app.
         if let cb = completionHandler { cb(messageData) }
     }
 
     // MARK: - Private
+
+    /// iOS tears the tunnel down quickly if the provider doesn't
+    /// actively read from its packet flow. Since we're not a real
+    /// VPN and have nothing to forward, we just discard everything.
+    private func startPacketDrain() {
+        packetFlow.readPackets { [weak self] _, _ in
+            // Intentionally dropped. Chain recursively.
+            self?.startPacketDrain()
+        }
+    }
 
     private func iOS164FlagDescription(_ proto: NETunnelProviderProtocol?) -> String {
         if #available(iOS 16.4, *) {
@@ -117,5 +114,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                  + " excludeCellularServices=\(proto?.excludeCellularServices ?? false)"
         }
         return ""
+    }
+
+    private func stopReasonName(_ reason: NEProviderStopReason) -> String {
+        switch reason {
+        case .none: return "none"
+        case .userInitiated: return "userInitiated"
+        case .providerFailed: return "providerFailed"
+        case .noNetworkAvailable: return "noNetworkAvailable"
+        case .unrecoverableNetworkChange: return "unrecoverableNetworkChange"
+        case .providerDisabled: return "providerDisabled"
+        case .authenticationCanceled: return "authenticationCanceled"
+        case .configurationFailed: return "configurationFailed"
+        case .idleTimeout: return "idleTimeout"
+        case .configurationDisabled: return "configurationDisabled"
+        case .configurationRemoved: return "configurationRemoved"
+        case .superceded: return "superceded"
+        case .userLogout: return "userLogout"
+        case .userSwitch: return "userSwitch"
+        case .connectionFailed: return "connectionFailed"
+        case .sleep: return "sleep"
+        case .appUpdate: return "appUpdate"
+        @unknown default: return "unknown(\(reason.rawValue))"
+        }
     }
 }

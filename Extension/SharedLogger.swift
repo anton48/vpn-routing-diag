@@ -2,8 +2,15 @@
 //  SharedLogger.swift
 //  RoutingDiag / Extension
 //
-//  Appends log lines to a single file in the shared App Group
-//  container so the main app can read them back.
+//  Three-tier logging so diagnostics survive any one tier failing:
+//
+//  1. `os_log` — visible in Console.app while a device is tethered
+//     to a Mac (Window → Devices and Simulators → View Device Logs).
+//  2. `NSLog` — same stream, broader iOS sysdiagnose coverage.
+//  3. Shared App Group file — readable from the main app's UI. If
+//     the App Group container isn't available (identifier not
+//     registered, entitlement mismatch), this tier silently fails
+//     but tiers 1 and 2 still work.
 //
 
 import Foundation
@@ -20,14 +27,14 @@ enum SharedLogger {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
-    private static let queue = DispatchQueue(label: "net.vpnroutingdiag.logger")
+    private static let queue = DispatchQueue(label: "com.vkturnproxy.routingdiag.logger")
 
     static func log(_ message: String) {
-        // 1. os_log so it's visible in Console.app while a device is
-        //    connected to a Mac — useful for live debugging.
+        // Tier 1: os_log (Console.app).
         os_log("%{public}s", log: osLog, type: .default, message)
-
-        // 2. File in shared container so the main app can pull it.
+        // Tier 2: NSLog (covered by sysdiagnose).
+        NSLog("[RoutingDiag] %@", message)
+        // Tier 3: file in shared container.
         queue.async {
             appendToFile(message)
         }
@@ -35,9 +42,18 @@ enum SharedLogger {
 
     /// Overwrite the log file (start of a fresh test run).
     static func reset() {
-        guard let url = fileURL() else { return }
         queue.sync {
-            try? FileManager.default.removeItem(at: url)
+            if let url = fileURL() {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        // Always log the reset via os_log/NSLog so we can confirm
+        // the extension did boot even if the file tier is dead.
+        log("=== log reset ===")
+        if let url = fileURL() {
+            log("log file path: \(url.path)")
+        } else {
+            log("WARNING: App Group '\(appGroupID)' container unavailable — file tier disabled")
         }
     }
 
@@ -59,7 +75,7 @@ enum SharedLogger {
             _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
         } else {
-            // File doesn't exist — create it.
+            // File doesn't exist yet — create it.
             try? data.write(to: url, options: .atomic)
         }
     }
