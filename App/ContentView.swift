@@ -10,8 +10,15 @@
 import SwiftUI
 import NetworkExtension
 
+// URL already conforms to Hashable/Equatable; extend it with the
+// Identifiable conformance so it can drive a SwiftUI `sheet(item:)`.
+extension URL: Identifiable {
+    public var id: URL { self }
+}
+
 struct ContentView: View {
     @EnvironmentObject var tunnel: TunnelManager
+    @State private var shareURL: URL?
 
     var body: some View {
         NavigationView {
@@ -22,6 +29,9 @@ struct ContentView: View {
                 logSection
             }
             .navigationTitle("Routing Diag")
+            .sheet(item: $shareURL) { url in
+                ShareSheet(items: [url])
+            }
         }
     }
 
@@ -77,6 +87,13 @@ struct ContentView: View {
         Section(header: Text("Log")) {
             HStack(spacing: 16) {
                 Button("Refresh") { tunnel.refreshLog() }
+                Button("Share") {
+                    if let url = tunnel.prepareLogForSharing() {
+                        shareURL = url
+                    }
+                }
+                .disabled(tunnel.logContents.isEmpty)
+                Spacer()
                 Button("Clear") { tunnel.clearLog() }
                     .foregroundColor(.red)
             }

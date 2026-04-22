@@ -162,6 +162,34 @@ final class TunnelManager: ObservableObject {
         logContents = ""
     }
 
+    /// Copy the current log file into the app's `tmp/` directory
+    /// under a timestamped filename and return the copy's URL, or
+    /// `nil` if the log isn't available yet. The copy is suitable
+    /// for handing to `UIActivityViewController` — sharing directly
+    /// from an App Group container is technically supported but
+    /// sometimes confuses target apps (Mail, Files) because of
+    /// sandbox reachability differences.
+    func prepareLogForSharing() -> URL? {
+        guard let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID) else {
+            return nil
+        }
+        let src = container.appendingPathComponent("routing.log")
+        guard FileManager.default.fileExists(atPath: src.path) else { return nil }
+
+        let stamp = DateFormatter.filenameStamp.string(from: Date())
+        let dstName = "routing-\(stamp).log"
+        let dst = FileManager.default.temporaryDirectory.appendingPathComponent(dstName)
+        try? FileManager.default.removeItem(at: dst)  // overwrite if any
+        do {
+            try FileManager.default.copyItem(at: src, to: dst)
+            return dst
+        } catch {
+            NSLog("[RoutingDiag-App] prepareLogForSharing: copy failed: \(error)")
+            return nil
+        }
+    }
+
     // MARK: - Private
 
     private func observeStatus(_ m: NETunnelProviderManager) {
@@ -187,6 +215,15 @@ final class TunnelManager: ObservableObject {
         }
         status = m.connection.status
     }
+}
+
+private extension DateFormatter {
+    static let filenameStamp: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f
+    }()
 }
 
 extension NEVPNStatus {
