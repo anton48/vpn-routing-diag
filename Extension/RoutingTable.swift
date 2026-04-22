@@ -27,13 +27,25 @@ enum RoutingTable {
     /// Build a human-readable multi-section dump: interfaces, IPv4
     /// routes, IPv6 routes.
     static func dump(label: String) -> String {
+        SharedLogger.log("[trace] dump(\(label)): start")
         var out = "===== \(label) =====\n"
+
         out += "--- interfaces (getifaddrs) ---\n"
+        SharedLogger.log("[trace] dump(\(label)): dumpInterfaces begin")
         out += dumpInterfaces()
+        SharedLogger.log("[trace] dump(\(label)): dumpInterfaces done")
+
         out += "--- IPv4 routes (sysctl NET_RT_DUMP AF_INET) ---\n"
+        SharedLogger.log("[trace] dump(\(label)): dumpRoutes(AF_INET) begin")
         out += dumpRoutes(family: AF_INET)
+        SharedLogger.log("[trace] dump(\(label)): dumpRoutes(AF_INET) done")
+
         out += "--- IPv6 routes (sysctl NET_RT_DUMP AF_INET6) ---\n"
+        SharedLogger.log("[trace] dump(\(label)): dumpRoutes(AF_INET6) begin")
         out += dumpRoutes(family: AF_INET6)
+        SharedLogger.log("[trace] dump(\(label)): dumpRoutes(AF_INET6) done")
+
+        SharedLogger.log("[trace] dump(\(label)): end (\(out.count) chars)")
         return out
     }
 
@@ -48,7 +60,13 @@ enum RoutingTable {
 
         var lines: [String] = []
         var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        var count = 0
         while let cur = ptr {
+            count += 1
+            if count > 500 {
+                lines.append("  (safety cutoff after 500 interfaces)")
+                break
+            }
             let info = cur.pointee
             let name = String(cString: info.ifa_name)
             let familyStr: String
@@ -106,7 +124,13 @@ enum RoutingTable {
         buf.withUnsafeBufferPointer { bp in
             guard let base = bp.baseAddress else { return }
             var offset = 0
+            var count = 0
             while offset < len {
+                count += 1
+                if count > 2000 {
+                    lines.append("  (safety cutoff after 2000 route entries)")
+                    break
+                }
                 // Read msglen from the rt_msghdr header, staying inside
                 // the rebind closure.
                 let msglen: Int = base.advanced(by: offset)
