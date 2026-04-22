@@ -176,6 +176,13 @@ final class TunnelManager: ObservableObject {
             guard let self = self else { return }
             Task { @MainActor in
                 self.status = m.connection.status
+                // Auto-refresh log on every status change so the user
+                // doesn't have to remember to tap Refresh. In practice
+                // the interesting dumps (PRE/POST-SETTINGS,
+                // POST-COMPLETION) land before the status becomes
+                // .connected, and PRE-TEARDOWN lands on .disconnecting
+                // → .disconnected.
+                self.refreshLog()
             }
         }
         status = m.connection.status
