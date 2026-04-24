@@ -158,6 +158,45 @@ final class TunnelManager: ObservableObject {
         }
     }
 
+    // MARK: - Experiments (Track 2)
+
+    /// Last result from an experimental command, shown in the UI.
+    @Published var lastExperimentResult: String = ""
+
+    /// Send a text command to the running extension via
+    /// `NETunnelProviderSession.sendProviderMessage`. The extension's
+    /// `handleAppMessage` parses it and calls into `RoutingWriter`
+    /// or similar. Only works while the tunnel is connected (or
+    /// connecting) — messages to a disconnected tunnel are silently
+    /// dropped by iOS.
+    func sendExperimentCommand(_ cmd: String) {
+        guard let session = manager?.connection as? NETunnelProviderSession else {
+            lastExperimentResult = "no session — is the tunnel running?"
+            return
+        }
+        guard let data = cmd.data(using: .utf8) else {
+            lastExperimentResult = "encoding failed"
+            return
+        }
+        do {
+            try session.sendProviderMessage(data) { [weak self] response in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    if let response = response,
+                       let text = String(data: response, encoding: .utf8) {
+                        self.lastExperimentResult = text
+                    } else {
+                        self.lastExperimentResult = "(nil response — check the extension log)"
+                    }
+                    // Re-read the log so any on-demand dumps land in the UI.
+                    self.refreshLog()
+                }
+            }
+        } catch {
+            lastExperimentResult = "sendProviderMessage error: \(error.localizedDescription)"
+        }
+    }
+
     /// Clear the log file in the shared container so a fresh run is
     /// easy to read.
     func clearLog() {

@@ -54,6 +54,21 @@
 // Route message types.
 #define RTM_VERSION     5
 
+#define RTM_ADD         0x1
+#define RTM_DELETE      0x2
+#define RTM_CHANGE      0x3
+#define RTM_GET         0x4
+
+// RTA_* — bitmask for rtm_addrs. Equivalent to (1 << RTAX_*).
+#define RTA_DST         0x1
+#define RTA_GATEWAY     0x2
+#define RTA_NETMASK     0x4
+#define RTA_GENMASK     0x8
+#define RTA_IFP         0x10
+#define RTA_IFA         0x20
+#define RTA_AUTHOR      0x40
+#define RTA_BRD         0x80
+
 struct rt_metrics {
     u_int32_t rmx_locks;
     u_int32_t rmx_mtu;

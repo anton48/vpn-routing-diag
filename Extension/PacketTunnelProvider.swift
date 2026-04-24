@@ -121,8 +121,49 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         _ messageData: Data,
         completionHandler: ((Data?) -> Void)?
     ) {
-        // Reserved for dump-on-demand IPC from the main app.
-        if let cb = completionHandler { cb(messageData) }
+        guard let msg = String(data: messageData, encoding: .utf8) else {
+            completionHandler?(nil)
+            return
+        }
+        let parts = msg.split(separator: ":").map(String.init)
+        SharedLogger.log(">>> handleAppMessage cmd=\(msg)")
+
+        let result: String
+        switch parts.first ?? "" {
+
+        case "probe":
+            let r = RoutingWriter.probeOpenRoutingSocket()
+            result = "probe: rc=\(r.rc) errno=\(r.errnoValue) — \(r.details)"
+
+        case "delete_scoped_default":
+            guard parts.count >= 2 else {
+                result = "usage: delete_scoped_default:<iface>"
+                break
+            }
+            let r = RoutingWriter.deleteScopedIPv4Default(ifaceName: parts[1])
+            result = "delete_scoped_default(\(parts[1])): rc=\(r.rc) errno=\(r.errnoValue) — \(r.details)"
+
+        case "add_scoped_route":
+            // cmd:add_scoped_route:<dst>:<mask>:<gw>:<scope-iface>
+            guard parts.count >= 5 else {
+                result = "usage: add_scoped_route:<dst>:<mask>:<gw>:<scope-iface>"
+                break
+            }
+            let r = RoutingWriter.addScopedIPv4Route(
+                dst: parts[1], mask: parts[2],
+                gateway: parts[3], scopeIfaceName: parts[4])
+            result = "add_scoped_route(\(parts[1])/\(parts[2]) via \(parts[3]) scope=\(parts[4])): rc=\(r.rc) errno=\(r.errnoValue) — \(r.details)"
+
+        case "dump_now":
+            SharedLogger.log(RoutingTable.dump(label: "ON-DEMAND DUMP (\(parts.dropFirst().joined(separator: ":")))"))
+            result = "on-demand routing dump written to log"
+
+        default:
+            result = "unknown cmd: \(msg)"
+        }
+
+        SharedLogger.log("<<< handleAppMessage result: \(result)")
+        completionHandler?(result.data(using: .utf8))
     }
 
     // MARK: - Private

@@ -26,12 +26,42 @@ struct ContentView: View {
                 flagsSection
                 profileSection
                 statusSection
+                experimentsSection
                 logSection
             }
             .navigationTitle("Routing Diag")
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
             }
+        }
+    }
+
+    private var experimentsSection: some View {
+        Section(header: Text("Experiments (PF_ROUTE writes)")) {
+            Button("Probe: open PF_ROUTE socket") {
+                tunnel.sendExperimentCommand("probe")
+            }
+            Button("Delete scoped default on en0") {
+                tunnel.sendExperimentCommand("delete_scoped_default:en0")
+            }
+            Button("Delete scoped default on pdp_ip0") {
+                tunnel.sendExperimentCommand("delete_scoped_default:pdp_ip0")
+            }
+            Button("Add scoped 17/8 → 10.200.0.4 on en0") {
+                tunnel.sendExperimentCommand("add_scoped_route:17.0.0.0:255.0.0.0:10.200.0.4:en0")
+            }
+            Button("Dump routing table now") {
+                tunnel.sendExperimentCommand("dump_now:manual")
+            }
+            if !tunnel.lastExperimentResult.isEmpty {
+                Text(tunnel.lastExperimentResult)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+            Text("Runs against the currently connected tunnel. Open the log below after each press to see the kernel's reaction.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
