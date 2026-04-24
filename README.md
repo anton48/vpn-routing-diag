@@ -230,3 +230,73 @@ interface binding can't be overridden from a Network Extension
 settings object at all. You have to let iOS decide whether APNs
 goes through the tunnel via the `excludeAPNs` flag (which itself
 only takes effect when `includeAllNetworks=true`).
+
+### Track 2 follow-up: can we write directly to the kernel routing table?
+
+The settings-object angle was dead-ended by NECP. The remaining
+theoretical escape hatch was **direct PF_ROUTE socket writes** —
+same BSD mechanism `route add` / `route delete` uses on macOS.
+If an extension could `write(2)` an RTM_DELETE for the scoped
+default, or an RTM_ADD for a scoped route pointing at the tunnel,
+it might bypass NECP's interface binding at the routing-lookup
+layer.
+
+Result: **iOS sandboxes WRITES on PF_ROUTE sockets even though
+READS (sysctl NET_RT_DUMP) are permitted.**
+
+Evidence collected on iPhone SE3 / iOS 26.2 while a diagnostic
+tunnel is running:
+
+```
+probe:                         rc=1   errno=0   socket(PF_ROUTE, SOCK_RAW, 0) OK
+delete_scoped_default(en0):    rc=-1  errno=1   EPERM
+delete_scoped_default(pdp_ip0):rc=-1  errno=1   EPERM
+add_scoped_route(17/8):        rc=-1  errno=1   EPERM
+```
+
+Captures in `findings/track2/01-delete-en0-EPERM.log`,
+`02-delete-pdp_ip0-EPERM.log`, `03-add-scoped-EPERM.log`.
+
+All three `write(2)` attempts on a fresh PF_ROUTE socket from
+within the NE fail immediately with `EPERM`. The kernel is
+denying route-table modification to sandboxed extension
+processes — it's not an "unreachable route" or "malformed
+message" error, it's a flat permission rejection from the
+socket-filter layer.
+
+Side observation from the same dumps: in a split-tunnel
+scenario (A), not ALL Apple-service IPs are routed via the
+physical interface. Some 17.x IPs appear as cloned host routes
+via `utun56`:
+
+```
+17.253.145.10   link#133    utun56   UHWI    ← via our tunnel
+17.253.150.10   link#133    utun56   UHWI    ← via our tunnel
+17.248.214.70   192.168.4.1 en0      UGHWI   ← via Wi-Fi
+17.253.39.132   192.168.4.1 en0      UGHWI   ← via Wi-Fi
+17.253.39.136   192.168.4.1 en0      UGHWI   ← via Wi-Fi
+```
+
+This confirms that NECP's interface binding is **per-process**,
+not per-destination. `apsd`, `CommCenter`, and a handful of
+other system daemons get pinned to a physical interface by
+policy; "normal" processes that happen to contact Apple hosts
+(Safari loading an iCloud resource, for instance) fall through
+to the default route and use the tunnel. So the Apple
+`17.0.0.0/8` space isn't uniformly carved out — specific
+daemons are.
+
+### Track 2 conclusion
+
+Track 2 adds a third layer of confirmation:
+
+- Settings-object flags (Track 1): don't change routing table;
+  act at NECP layer.
+- More-specific unscoped includedRoutes (hijack follow-up):
+  don't win against NECP's scoped socket binding.
+- **Direct routing-table writes (Track 2): sandboxed, EPERM.**
+
+There is no documented, public API from a Network Extension that
+can move APNs / CommCenter traffic between interfaces. The
+`includeAllNetworks=true` + `excludeAPNs=false` combination is
+the only lever.
